@@ -233,7 +233,7 @@ XDRStruct!(specdata3, specdata1, specdata2);
 
 /// File Handle information
 #[allow(non_camel_case_types)]
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct nfs_fh3 {
     pub data: [u8; FH3_SIZE],
 }

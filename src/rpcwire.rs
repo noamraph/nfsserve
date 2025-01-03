@@ -136,7 +136,7 @@ async fn read_fragment(
 
 pub async fn write_fragment(
     socket: &mut tokio::net::TcpStream,
-    buf: &Vec<u8>,
+    buf: &[u8],
 ) -> Result<(), anyhow::Error> {
     // TODO: split into many fragments
     assert!(buf.len() < (1 << 31));

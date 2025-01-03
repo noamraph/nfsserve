@@ -5,7 +5,8 @@ use async_trait::async_trait;
 
 use nfsserve::{
     nfs::{
-        self, fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3,
+        self, fattr3, fileid3, filename3, ftype3, nfs_fh3, nfspath3, nfsstat3, nfstime3, sattr3,
+        specdata3, FH3_SIZE,
     },
     tcp::*,
     vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities},
@@ -79,7 +80,18 @@ fn make_dir(name: &str, id: fileid3, parent: fileid3, contents: Vec<fileid3>) ->
 #[derive(Debug)]
 pub struct DemoFS {
     fs: Mutex<Vec<FSEntry>>,
-    rootdir: fileid3,
+    rootdir: nfs_fh3,
+}
+
+/// Converts the fileid to an opaque NFS file handle. Optional.
+fn id_to_fh(id: fileid3) -> nfs_fh3 {
+    let mut ret: [u8; FH3_SIZE] = [0; FH3_SIZE];
+    ret[0..8].clone_from_slice(&id.to_le_bytes());
+    nfs_fh3 { data: ret }
+}
+/// Converts an opaque NFS file handle to a fileid.  Optional.
+fn fh_to_id(fh: nfs_fh3) -> fileid3 {
+    u64::from_le_bytes(fh.data[0..8].try_into().unwrap())
 }
 
 impl Default for DemoFS {
@@ -112,16 +124,14 @@ impl Default for DemoFS {
 
         DemoFS {
             fs: Mutex::new(entries),
-            rootdir: 1,
+            rootdir: id_to_fh(1),
         }
     }
 }
 
-// For this demo file system we let the handle just be the file
-// there is only 1 file. a.txt.
 #[async_trait]
 impl NFSFileSystem for DemoFS {
-    fn root_dir(&self) -> fileid3 {
+    fn root_dir(&self) -> nfs_fh3 {
         self.rootdir
     }
 
@@ -129,11 +139,12 @@ impl NFSFileSystem for DemoFS {
         VFSCapabilities::ReadWrite
     }
 
-    async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
+    async fn write(&self, fh: nfs_fh3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
         {
             let mut fs = self.fs.lock().unwrap();
-            let mut fssize = fs[id as usize].attr.size;
-            if let FSContents::File(bytes) = &mut fs[id as usize].contents {
+            let index = fh_to_id(fh) as usize;
+            let mut fssize = fs[index].attr.size;
+            if let FSContents::File(bytes) = &mut fs[index].contents {
                 let offset = offset as usize;
                 if offset + data.len() > bytes.len() {
                     bytes.resize(offset + data.len(), 0);
@@ -141,18 +152,19 @@ impl NFSFileSystem for DemoFS {
                     fssize = bytes.len() as u64;
                 }
             }
-            fs[id as usize].attr.size = fssize;
-            fs[id as usize].attr.used = fssize;
+            fs[index].attr.size = fssize;
+            fs[index].attr.used = fssize;
         }
-        self.getattr(id).await
+        self.getattr(fh).await
     }
 
     async fn create(
         &self,
-        dirid: fileid3,
+        dirid: nfs_fh3,
         filename: &filename3,
         _attr: sattr3,
-    ) -> Result<(fileid3, fattr3), nfsstat3> {
+    ) -> Result<(nfs_fh3, fattr3), nfsstat3> {
+        let dirid = fh_to_id(dirid);
         let newid: fileid3;
         {
             let mut fs = self.fs.lock().unwrap();
@@ -167,20 +179,23 @@ impl NFSFileSystem for DemoFS {
                 dir.push(newid);
             }
         }
+        let newid = id_to_fh(newid);
         Ok((newid, self.getattr(newid).await.unwrap()))
     }
 
     async fn create_exclusive(
         &self,
-        _dirid: fileid3,
+        _dirid: nfs_fh3,
         _filename: &filename3,
-    ) -> Result<fileid3, nfsstat3> {
+    ) -> Result<nfs_fh3, nfsstat3> {
         Err(nfsstat3::NFS3ERR_NOTSUPP)
     }
 
-    async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
+    async fn lookup(&self, dirid: nfs_fh3, filename: &filename3) -> Result<nfs_fh3, nfsstat3> {
         let fs = self.fs.lock().unwrap();
-        let entry = fs.get(dirid as usize).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let entry = fs
+            .get(fh_to_id(dirid) as usize)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
         if let FSContents::File(_) = entry.contents {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         } else if let FSContents::Directory(dir) = &entry.contents {
@@ -190,26 +205,30 @@ impl NFSFileSystem for DemoFS {
             }
             // if looking for dir/.. its the parent directory
             if filename[..] == [b'.', b'.'] {
-                return Ok(entry.parent);
+                return Ok(id_to_fh(entry.parent));
             }
             for i in dir {
                 if let Some(f) = fs.get(*i as usize) {
                     if f.name[..] == filename[..] {
-                        return Ok(*i);
+                        return Ok(id_to_fh(*i));
                     }
                 }
             }
         }
         Err(nfsstat3::NFS3ERR_NOENT)
     }
-    async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
+    async fn getattr(&self, fh: nfs_fh3) -> Result<fattr3, nfsstat3> {
         let fs = self.fs.lock().unwrap();
-        let entry = fs.get(id as usize).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let entry = fs
+            .get(fh_to_id(fh) as usize)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
         Ok(entry.attr)
     }
-    async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
+    async fn setattr(&self, fh: nfs_fh3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
         let mut fs = self.fs.lock().unwrap();
-        let entry = fs.get_mut(id as usize).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let entry = fs
+            .get_mut(fh_to_id(fh) as usize)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
         match setattr.atime {
             nfs::set_atime::DONT_CHANGE => {}
             nfs::set_atime::SET_TO_CLIENT_TIME(c) => {
@@ -263,12 +282,14 @@ impl NFSFileSystem for DemoFS {
 
     async fn read(
         &self,
-        id: fileid3,
+        fh: nfs_fh3,
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
         let fs = self.fs.lock().unwrap();
-        let entry = fs.get(id as usize).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let entry = fs
+            .get(fh_to_id(fh) as usize)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
         if let FSContents::Directory(_) = entry.contents {
             return Err(nfsstat3::NFS3ERR_ISDIR);
         } else if let FSContents::File(bytes) = &entry.contents {
@@ -288,12 +309,14 @@ impl NFSFileSystem for DemoFS {
 
     async fn readdir(
         &self,
-        dirid: fileid3,
+        dirid: nfs_fh3,
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
         let fs = self.fs.lock().unwrap();
-        let entry = fs.get(dirid as usize).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let entry = fs
+            .get(fh_to_id(dirid) as usize)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
         if let FSContents::File(_) = entry.contents {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         } else if let FSContents::Directory(dir) = &entry.contents {
@@ -316,6 +339,7 @@ impl NFSFileSystem for DemoFS {
                     fileid: *i,
                     name: fs[(*i) as usize].name.clone(),
                     attr: fs[(*i) as usize].attr,
+                    filehandle: id_to_fh(*i),
                 });
                 if ret.entries.len() >= max_entries {
                     break;
@@ -333,7 +357,7 @@ impl NFSFileSystem for DemoFS {
     /// If not supported dur to readonly file system
     /// this should return Err(nfsstat3::NFS3ERR_ROFS)
     #[allow(unused)]
-    async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
+    async fn remove(&self, dirid: nfs_fh3, filename: &filename3) -> Result<(), nfsstat3> {
         return Err(nfsstat3::NFS3ERR_NOTSUPP);
     }
 
@@ -343,9 +367,9 @@ impl NFSFileSystem for DemoFS {
     #[allow(unused)]
     async fn rename(
         &self,
-        from_dirid: fileid3,
+        from_dirid: nfs_fh3,
         from_filename: &filename3,
-        to_dirid: fileid3,
+        to_dirid: nfs_fh3,
         to_filename: &filename3,
     ) -> Result<(), nfsstat3> {
         return Err(nfsstat3::NFS3ERR_NOTSUPP);
@@ -354,22 +378,22 @@ impl NFSFileSystem for DemoFS {
     #[allow(unused)]
     async fn mkdir(
         &self,
-        _dirid: fileid3,
+        _dirid: nfs_fh3,
         _dirname: &filename3,
-    ) -> Result<(fileid3, fattr3), nfsstat3> {
+    ) -> Result<(nfs_fh3, fattr3), nfsstat3> {
         Err(nfsstat3::NFS3ERR_ROFS)
     }
 
     async fn symlink(
         &self,
-        _dirid: fileid3,
+        _dirid: nfs_fh3,
         _linkname: &filename3,
         _symlink: &nfspath3,
         _attr: &sattr3,
-    ) -> Result<(fileid3, fattr3), nfsstat3> {
+    ) -> Result<(nfs_fh3, fattr3), nfsstat3> {
         Err(nfsstat3::NFS3ERR_ROFS)
     }
-    async fn readlink(&self, _id: fileid3) -> Result<nfspath3, nfsstat3> {
+    async fn readlink(&self, _fh: nfs_fh3) -> Result<nfspath3, nfsstat3> {
         return Err(nfsstat3::NFS3ERR_NOTSUPP);
     }
 }
