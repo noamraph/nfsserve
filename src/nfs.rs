@@ -11,6 +11,8 @@ use num_traits::cast::FromPrimitive;
 use std::fmt;
 use std::io::{Read, Write};
 
+pub const FH3_SIZE: usize = 20;
+
 // Transcribed from RFC 1813.
 
 // Section 2.2 Constants
@@ -233,13 +235,29 @@ XDRStruct!(specdata3, specdata1, specdata2);
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug)]
 pub struct nfs_fh3 {
-    pub data: Vec<u8>,
+    pub data: [u8; FH3_SIZE],
 }
-XDRStruct!(nfs_fh3, data);
 #[allow(clippy::derivable_impls)]
 impl Default for nfs_fh3 {
     fn default() -> nfs_fh3 {
-        nfs_fh3 { data: Vec::new() }
+        nfs_fh3 { data: [0; FH3_SIZE] }
+    }
+}
+impl XDR for nfs_fh3 {
+    #[allow(clippy::assertions_on_constants)]
+    fn serialize<R: Write>(&self, dest: &mut R) -> std::io::Result<()> {
+        let length = FH3_SIZE as u32;
+        length.serialize(dest)?;
+        dest.write_all(&self.data)?;
+        assert!(FH3_SIZE % 4 == 0);
+        Ok(())
+    }
+    fn deserialize<R: Read>(&mut self, src: &mut R) -> std::io::Result<()> {
+        let mut length: u32 = 0;
+        length.deserialize(src)?;
+        assert!(length == FH3_SIZE as u32, "length is {}", length);
+        src.read_exact(&mut self.data)?;
+        Ok(())
     }
 }
 
@@ -559,8 +577,3 @@ pub struct symlinkdata3 {
     pub symlink_data: nfspath3,
 }
 XDRStruct!(symlinkdata3, symlink_attributes, symlink_data);
-
-/// We define the root handle here
-pub fn get_root_mount_handle() -> Vec<u8> {
-    vec![0]
-}

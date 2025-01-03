@@ -1,7 +1,6 @@
 use crate::nfs::*;
 use crate::nfs;
 use async_trait::async_trait;
-use std::cmp::Ordering;
 use std::sync::Once;
 use std::time::SystemTime;
 #[derive(Default, Debug)]
@@ -246,25 +245,14 @@ pub trait NFSFileSystem: Sync {
 
     /// Converts the fileid to an opaque NFS file handle. Optional.
     fn id_to_fh(&self, id: fileid3) -> nfs_fh3 {
-        let gennum = get_generation_number();
-        let mut ret: Vec<u8> = Vec::new();
-        ret.extend_from_slice(&gennum.to_le_bytes());
-        ret.extend_from_slice(&id.to_le_bytes());
+        let mut ret: [u8; FH3_SIZE] = [0; FH3_SIZE];
+        ret[0..8].clone_from_slice(&id.to_le_bytes());
         nfs_fh3 { data: ret }
     }
     /// Converts an opaque NFS file handle to a fileid.  Optional.
     fn fh_to_id(&self, id: &nfs_fh3) -> Result<fileid3, nfsstat3> {
-        if id.data.len() != 16 {
-            return Err(nfsstat3::NFS3ERR_BADHANDLE);
-        }
-        let gen = u64::from_le_bytes(id.data[0..8].try_into().unwrap());
-        let id = u64::from_le_bytes(id.data[8..16].try_into().unwrap());
-        let gennum = get_generation_number();
-        match gen.cmp(&gennum) {
-            Ordering::Less => Err(nfsstat3::NFS3ERR_STALE),
-            Ordering::Greater => Err(nfsstat3::NFS3ERR_BADHANDLE),
-            Ordering::Equal => Ok(id),
-        }
+        let id = u64::from_le_bytes(id.data[0..8].try_into().unwrap());
+        Ok(id)
     }
     /// Converts a complete path to a fileid.  Optional.
     /// The default implementation walks the directory structure with lookup()

@@ -1,5 +1,6 @@
 use crate::context::RPCContext;
 use crate::mount::*;
+use crate::nfs::nfs_fh3;
 use crate::rpc::*;
 use crate::xdr::*;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -74,7 +75,7 @@ pub fn mountproc3_null(
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug)]
 struct mountres3_ok {
-    fhandle: fhandle3, // really same thing as nfs::nfs_fh3
+    fhandle: nfs_fh3,
     auth_flavors: Vec<u32>,
 }
 XDRStruct!(mountres3_ok, fhandle, auth_flavors);
@@ -108,7 +109,7 @@ pub async fn mountproc3_mnt(
     };
     if let Ok(fileid) = context.vfs.path_to_id(&path).await {
         let response = mountres3_ok {
-            fhandle: context.vfs.id_to_fh(fileid).data,
+            fhandle: context.vfs.id_to_fh(fileid),
             auth_flavors: vec![
                 auth_flavor::AUTH_NULL.to_u32().unwrap(),
                 auth_flavor::AUTH_UNIX.to_u32().unwrap(),
