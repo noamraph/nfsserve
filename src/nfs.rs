@@ -240,7 +240,9 @@ pub struct nfs_fh3 {
 #[allow(clippy::derivable_impls)]
 impl Default for nfs_fh3 {
     fn default() -> nfs_fh3 {
-        nfs_fh3 { data: [0; FH3_SIZE] }
+        nfs_fh3 {
+            data: [0; FH3_SIZE],
+        }
     }
 }
 impl XDR for nfs_fh3 {
